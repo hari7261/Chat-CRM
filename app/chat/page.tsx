@@ -36,21 +36,11 @@ function ChatContent() {
   const [message, setMessage] = useState("")
   const [isConnected, setIsConnected] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const roomCode = searchParams.get("room")
   const userName = searchParams.get("name")
-
-  const userColors = [
-    "bg-blue-500",
-    "bg-purple-500",
-    "bg-green-500",
-    "bg-orange-500",
-    "bg-pink-500",
-    "bg-indigo-500",
-    "bg-teal-500",
-    "bg-red-500",
-  ]
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -62,53 +52,83 @@ function ChatContent() {
       return
     }
 
-    const newSocket = io(process.env.NODE_ENV === "production" ? undefined : "http://localhost:3000", {
-      path: "/api/socket",
-    })
+    // Initialize socket connection
+    const socketInitializer = async () => {
+      try {
+        // Initialize the socket server
+        await fetch("/api/socket")
 
-    newSocket.on("connect", () => {
-      setIsConnected(true)
-      newSocket.emit("join-room", { room: roomCode, user: userName })
-    })
+        const newSocket = io({
+          path: "/api/socket",
+          addTrailingSlash: false,
+        })
 
-    newSocket.on("disconnect", () => {
-      setIsConnected(false)
-    })
+        newSocket.on("connect", () => {
+          console.log("Connected to server with ID:", newSocket.id)
+          setIsConnected(true)
+          setConnectionError(null)
+          newSocket.emit("join-room", { room: roomCode, user: userName })
+        })
 
-    newSocket.on("message", (data: Message) => {
-      setMessages((prev) => [...prev, data])
-    })
+        newSocket.on("disconnect", () => {
+          console.log("Disconnected from server")
+          setIsConnected(false)
+        })
 
-    newSocket.on("users-update", (users: User[]) => {
-      setUsers(users)
-    })
+        newSocket.on("connect_error", (error) => {
+          console.error("Connection error:", error)
+          setIsConnected(false)
+          setConnectionError("Failed to connect to chat server")
+        })
 
-    newSocket.on("user-joined", (data: { user: string }) => {
-      const joinMessage: Message = {
-        id: Date.now().toString(),
-        user: "System",
-        message: `${data.user} joined the room`,
-        timestamp: new Date(),
-        color: "bg-gray-500",
+        newSocket.on("message", (data: Message) => {
+          console.log("Received message:", data)
+          setMessages((prev) => [...prev, data])
+        })
+
+        newSocket.on("users-update", (users: User[]) => {
+          console.log("Users updated:", users)
+          setUsers(users)
+        })
+
+        newSocket.on("user-joined", (data: { user: string }) => {
+          console.log("User joined:", data.user)
+          const joinMessage: Message = {
+            id: Date.now().toString(),
+            user: "System",
+            message: `${data.user} joined the room`,
+            timestamp: new Date(),
+            color: "bg-gray-500",
+          }
+          setMessages((prev) => [...prev, joinMessage])
+        })
+
+        newSocket.on("user-left", (data: { user: string }) => {
+          console.log("User left:", data.user)
+          const leaveMessage: Message = {
+            id: Date.now().toString(),
+            user: "System",
+            message: `${data.user} left the room`,
+            timestamp: new Date(),
+            color: "bg-gray-500",
+          }
+          setMessages((prev) => [...prev, leaveMessage])
+        })
+
+        setSocket(newSocket)
+      } catch (error) {
+        console.error("Socket initialization error:", error)
+        setConnectionError("Failed to initialize chat")
       }
-      setMessages((prev) => [...prev, joinMessage])
-    })
+    }
 
-    newSocket.on("user-left", (data: { user: string }) => {
-      const leaveMessage: Message = {
-        id: Date.now().toString(),
-        user: "System",
-        message: `${data.user} left the room`,
-        timestamp: new Date(),
-        color: "bg-gray-500",
-      }
-      setMessages((prev) => [...prev, leaveMessage])
-    })
-
-    setSocket(newSocket)
+    socketInitializer()
 
     return () => {
-      newSocket.close()
+      if (socket) {
+        console.log("Cleaning up socket connection")
+        socket.close()
+      }
     }
   }, [roomCode, userName, router])
 
@@ -119,12 +139,15 @@ function ChatContent() {
   const sendMessage = (e: React.FormEvent) => {
     e.preventDefault()
     if (message.trim() && socket && isConnected) {
+      console.log("Sending message:", message)
       socket.emit("message", {
         room: roomCode,
         user: userName,
         message: message.trim(),
       })
       setMessage("")
+    } else {
+      console.log("Cannot send message - socket:", !!socket, "connected:", isConnected, "message:", message.trim())
     }
   }
 
@@ -165,7 +188,9 @@ function ChatContent() {
                 <Circle
                   className={`h-3 w-3 ${isConnected ? "text-green-500 fill-current" : "text-red-500 fill-current"}`}
                 />
-                <span className="text-sm font-medium">{isConnected ? "Connected" : "Disconnected"}</span>
+                <span className="text-sm font-medium">
+                  {isConnected ? "Connected" : connectionError || "Disconnected"}
+                </span>
               </div>
             </div>
           </div>
@@ -191,6 +216,13 @@ function ChatContent() {
               {/* Messages */}
               <ScrollArea className="flex-1 p-6">
                 <div className="space-y-4">
+                  {!isConnected && (
+                    <div className="text-center py-8">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-4"></div>
+                      <p className="text-gray-500">Connecting to chat...</p>
+                      {connectionError && <p className="text-red-500 text-sm mt-2">{connectionError}</p>}
+                    </div>
+                  )}
                   {messages.map((msg) => (
                     <div
                       key={msg.id}
@@ -243,7 +275,7 @@ function ChatContent() {
                   <Input
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
-                    placeholder="Type your message..."
+                    placeholder={isConnected ? "Type your message..." : "Connecting..."}
                     className="flex-1 h-12 rounded-2xl border-2 border-gray-200 focus:border-blue-500 transition-colors"
                     disabled={!isConnected}
                   />
@@ -272,6 +304,11 @@ function ChatContent() {
             <CardContent>
               <ScrollArea className="h-full">
                 <div className="space-y-3">
+                  {users.length === 0 && isConnected && (
+                    <div className="text-center py-4">
+                      <p className="text-gray-500 text-sm">No users online</p>
+                    </div>
+                  )}
                   {users.map((user) => (
                     <div
                       key={user.id}
